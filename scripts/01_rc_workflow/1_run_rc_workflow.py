@@ -28,6 +28,12 @@ from reservoir.tasks import (io, coding, tasks)
 from reservoir.simulator import sim_lnm
 
 from netneurotools import networks
+from netneurotools import datasets as d
+
+from bct import reference
+
+import copy
+import random
 
 #%% --------------------------------------------------------------------------------------------------------------------
 # DYNAMIC GLOBAL VARIABLES
@@ -35,19 +41,23 @@ from netneurotools import networks
 TASK = 'sgnl_recon' #'sgnl_recon' 'pttn_recog'
 SPEC_TASK = 'mem_cap' #'mem_cap' 'nonlin_cap' 'fcn_app'
 TASK_REF = 'T1'
-FACTOR = 0.0001 #0.0001 0.001 0.01
+#FACTOR = 0.0001 #0.0001 0.001 0.01
 
-INPUTS = 'subctx'
-CLASS = 'functional' #'functional' 'cytoarch'
+#INPUTS = 'subctx'
+CLASS = 'functional' #'functional' 'cytoarch' #only used in metadata, which only used in null and spintest
 
-N_PROCESS = 40
-N_RUNS = 1000
+N_PROCESS = 20#40
+#N_RUNS = 1 #apple
 
 #%% --------------------------------------------------------------------------------------------------------------------
 # STATIC GLOBAL VARIABLES
 # ----------------------------------------------------------------------------------------------------------------------
 PROJ_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+if not os.path.exists(os.path.join(PROJ_DIR, 'data')):
+        os.makedirs(os.path.join(PROJ_DIR, 'data'))
 DATA_DIR = os.path.join(PROJ_DIR, 'data')
+
 RAW_RES_DIR = os.path.join(PROJ_DIR, 'raw_results')
 
 #%% --------------------------------------------------------------------------------------------------------------------
@@ -91,10 +101,6 @@ def consensus_network(connectome, coords, hemiid, path_res_conn, iter_id=None, s
         # idx_ctx, = np.where(ctx == 1)
         # stru_conn = stru_conn[np.ix_(idx_ctx, idx_ctx)]
 
-        # remove bad subjects
-        bad_subj = [7, 12, 43] #SC:7,12,43 #FC:32
-        stru_conn = np.delete(stru_conn, bad_subj, axis=2)
-
         # remove nans
         nan_subjs = np.unique(np.where(np.isnan(stru_conn))[-1])
         stru_conn = np.delete(stru_conn, nan_subjs, axis=2)
@@ -119,10 +125,10 @@ def null_network(model_name, path_res_conn, iter_id=None, **kwargs):
         np.save(os.path.join(path_res_conn, conn_file), new_conn)
 
 
-def run_workflow(conn_name, connectome, path_res_conn, path_io, path_res_sim, path_res_tsk, \
-                 bin=False, input_nodes=None, output_nodes=None, readout_modules=None, \
-                 scores_file=None, iter_id=None, iter_conn=True, iter_io=False, iter_sim=False, \
-                 encode=True, decode=True, **kwargs):
+def run_workflow(connectome, method, ifNorm, FACTOR, path_io, path_res_sim, path_res_tsk, \
+                 input_nodes, output_nodes, percentage = 0,rewireNum = 0, bin=False, readout_modules=None, \
+                 scores_file=None, iter_id=None, iter_io=False, iter_sim=False, \
+                 encode=True, decode=False, **kwargs):
     """
         Runs the full reservoir pipeline: loads and scales connectivity matrix,
         generates input/output data for the task, simulates reservoir states,
@@ -133,10 +139,13 @@ def run_workflow(conn_name, connectome, path_res_conn, path_io, path_res_sim, pa
         conn_name: str, {'consensus', 'rand_mio'}
             Specifies the name of the connectivity matrix file. 'consensus' for
             reliability and spintest analyses, and 'rand_mio' for significance
-            analysis.
+            analysis. #omitted
 
         connectome: str, {human_500, human_250}
             Specifies the scale of the conenctome
+
+        method: str,{rewire, reverse}
+            specifies the type of null network we are dealing with
 
         path_res_conn : str
             Path to conenctivity matrix
@@ -158,7 +167,7 @@ def run_workflow(conn_name, connectome, path_res_conn, path_io, path_res_sim, pa
             nodes in the recurrent network.
             N: number of input,output nodes in the network
 
-        readout_modules: (N, ) numpy.darray
+        readout_modules: (N,) numpy.darray, optional
             Array that indicates the module at which each output node belongs
             to. Modules can be int or str.
             N: number of output nodes
@@ -181,11 +190,6 @@ def run_workflow(conn_name, connectome, path_res_conn, path_io, path_res_sim, pa
     # --------------------------------------------------------------------------------------------------------------------
     # DEFINE FILE NAMES
     # ----------------------------------------------------------------------------------------------------------------------
-
-    # define file connectivity data
-    if np.logical_and(iter_id is not None, iter_conn):
-        conn_file = conn_name + '_' + str(iter_id) + '.npy'
-    else: conn_file = conn_name + '.npy'
 
     # define file I/O data
     if np.logical_and(iter_id is not None, iter_io):
@@ -220,23 +224,33 @@ def run_workflow(conn_name, connectome, path_res_conn, path_io, path_res_sim, pa
     # --------------------------------------------------------------------------------------------------------------------
     # IMPORT CONNECTIVITY DATA
     # ----------------------------------------------------------------------------------------------------------------------
-
-    # load connectivity data
-    conn = np.load(os.path.join(path_res_conn, conn_file))
-    ctx = np.load(os.path.join(DATA_DIR, 'cortical', 'cortical_' + connectome + '.npy'))
+    if (method == 'reverse'):
+        # load connectivity data
+        conn = reversedConn(connectome,percentage)
+    elif(method == 'rewire'):
+        if (method != 'rewire' or rewireNum == 0):
+            print("this script is not working right!!")
+        conn,num  = rewiringConn(connectome,rewireNum)
+    elif(method == 'empirical'):
+        conn = np.load(os.path.join(DATA_DIR, connectome + '_conn'+'.npy'), allow_pickle=True)
+    else:
+        conn = np.random.rand(279,279)
+        
+    
+    #ctx = np.load(os.path.join(DATA_DIR, 'cortical', 'cortical_' + connectome + '.npy'))
 
     # scale weights [0,1]
     if bin: conn = conn.astype(bool).astype(int)
     else:   conn = (conn-conn.min())/(conn.max()-conn.min())
-
+ 
     # normalize by the spectral radius
     ew, _ = eigh(conn)
     conn  = conn/np.max(ew)
     n_nodes = len(conn)
 
     # select input nodes
-    if input_nodes is None: input_nodes = np.where(ctx == 0)[0]
-    if output_nodes is None: output_nodes = np.where(ctx == 1)[0]
+    #if input_nodes is None: input_nodes = np.where(ctx == 0)[0] #subcortical
+    #if output_nodes is None: output_nodes = np.where(ctx == 1)[0] #cortical
 
     # --------------------------------------------------------------------------------------------------------------------
     # CREATE I/O DATA FOR TASK
@@ -264,7 +278,7 @@ def run_workflow(conn_name, connectome, path_res_conn, path_io, path_res_sim, pa
 
         # create input connectivity matrix - depends on the shape of the input
         w_in = np.zeros((input_train.shape[1],len(conn)))
-        w_in[input_nodes,:] = FACTOR
+        w_in[:,input_nodes] = FACTOR
 
         reservoir_states_train = sim_lnm.run_sim(w_in=w_in,
                                                  w=conn,
@@ -290,27 +304,36 @@ def run_workflow(conn_name, connectome, path_res_conn, path_io, path_res_sim, pa
     reservoir_states = reservoir_states.squeeze()
     reservoir_states = np.split(reservoir_states, len(reservoir_states), axis=0)
     reservoir_states = [rs.squeeze() for rs in reservoir_states]
+    
 
     outputs = np.load(os.path.join(path_io, output_file))
 
     # --------------------------------------------------------------------------------------------------------------------
     # PERFORM TASK - ENCODERS
     # ----------------------------------------------------------------------------------------------------------------------
-    try:
-        if np.logical_and(encode, not os.path.exists(os.path.join(path_res_tsk, encoding_file))):
+    #print("started encoding")
+    a= encode
+    b = not os.path.exists(os.path.join(path_res_tsk, encoding_file))
+    #print(a,b)
+    if np.logical_and(a, b):
+        
+        #print('\nEncoding: ') #prints this
+        df_encoding = coding.encoder(task=SPEC_TASK,
+                                    target=outputs,
+                                    reservoir_states=reservoir_states,
+                                    readout_modules=None,
+                                    alphas=alphas,
+                                    )
 
-            print('\nEncoding: ')
-            df_encoding = coding.encoder(task=SPEC_TASK,
-                                         target=outputs,
-                                         reservoir_states=reservoir_states,
-                                         readout_modules=readout_modules,
-                                         alphas=alphas,
-                                         )
-
-            df_encoding = df_encoding.rename(columns={'module':'class'}, copy=False)
-            df_encoding.to_csv(os.path.join(path_res_tsk, encoding_file))
-    except:
-        pass
+        # df_encoding = df_encoding.rename(columns={'module':'class'}, copy=False)
+        if ifNorm:
+            df_encoding["performance"] = (df_encoding["performance"] / normalizeConn(connectome,conn)) #apple #normalization   
+        df_encoding.to_csv(os.path.join(path_res_tsk, encoding_file))
+        print("saved as csv","  iter is ",iter_id)
+        # except:
+        #     print("went to pass")
+        # #    print(a,b)
+        # #     pass
 
     # --------------------------------------------------------------------------------------------------------------------
     # PERFORM TASK - DECODERS
@@ -337,100 +360,101 @@ def run_workflow(conn_name, connectome, path_res_conn, path_io, path_res_sim, pa
         pass
 
     # delete reservoir states to release memory storage
-    if iter_sim: os.remove(os.path.join(path_res_sim, res_states_file))
+    if iter_sim: os.remove(os.path.join(path_res_sim, res_states_file)) #apple
 
 
 #%% --------------------------------------------------------------------------------------------------------------------
 # LOCAL
 # ----------------------------------------------------------------------------------------------------------------------
-def reliability(connectome):
-    """
-       Uses the 70 subjs to generate 1000 bootstrapped samples of 40 subjs
-       to reconstruct 1000 consensus matrices
-
-       Different consensus connectivity matrix , same I/O signal
-    """
+def reliability(connectome, FACTOR, ifNorm, method):
+    if (method == 'rewire'):
+        N_RUNS = 1000
+    else:
+        N_RUNS = 1
 
     print ('INITIATING PROCESSING TIME - RELIABILITY')
-    # t0_1 = time.clock()
-    # t0_2 = time.time()
+    t0_1 = time.perf_counter()
+    #t0_2 = time.time()
+
 
     EXP = 'reliability'
-
-    IO_TASK_DIR  = os.path.join(RAW_RES_DIR, 'io_tasks', EXP, f'{INPUTS}_scale{connectome[-3:]}')
-    RES_CONN_DIR = os.path.join(RAW_RES_DIR, 'conn_results', EXP, f'scale{connectome[-3:]}')
-    RES_SIM_DIR  = os.path.join(RAW_RES_DIR, 'sim_results', EXP, f'{INPUTS}_scale{connectome[-3:]}')
-    RES_TSK_DIR  = os.path.join(RAW_RES_DIR, 'tsk_results', EXP, f'{INPUTS}_scale{connectome[-3:]}')
+    IO_TASK_DIR  = os.path.join(RAW_RES_DIR, 'io_tasks', EXP)
+    RES_CONN_DIR = os.path.join(RAW_RES_DIR, 'conn_results', EXP)
+    RES_SIM_DIR  = os.path.join(RAW_RES_DIR, 'sim_results', EXP)# f'{INPUTS}_scale{connectome[-3:]}'
+    RES_TSK_DIR  = os.path.join(RAW_RES_DIR, 'tsk_results', EXP)
 
     if not os.path.exists(IO_TASK_DIR):  os.makedirs(IO_TASK_DIR)
     if not os.path.exists(RES_CONN_DIR): os.makedirs(RES_CONN_DIR)
     if not os.path.exists(RES_SIM_DIR):  os.makedirs(RES_SIM_DIR)
     if not os.path.exists(RES_TSK_DIR):  os.makedirs(RES_TSK_DIR)
 
-
-    # --------------------------------------------------------------------------------------------------------------------
-    # CREATE CONSENSUS MATRICES
-    # ----------------------------------------------------------------------------------------------------------------------
-    CONN_DIR = os.path.join(DATA_DIR, 'connectivity', 'individual')
-
-    filename, class_labels, class_mapping_ctx = load_metada(connectome)
-
-    # generate bootstrapped samples
-    if not os.path.exists(os.path.join(RES_CONN_DIR, 'subj_resampling.npy')):
-
-        # load connectivity data
-        stru_conn = np.load(os.path.join(CONN_DIR, connectome + '.npy'))
-
-        # remove bad subjects
-        bad_subj = [7, 12, 43] #SC:7,12,43 #FC:32
-        stru_conn = np.delete(stru_conn, bad_subj, axis=2)
-
-        # perform bootstrap resampling
-        n_subj = stru_conn.shape[2]
-        resampling = [np.random.choice(np.arange(n_subj), size=40, replace=False) for _ in range(N_RUNS)]
-        np.save(os.path.join(RES_CONN_DIR, 'subj_resampling.npy'), resampling)
-
-    else:
-        resampling = np.load(os.path.join(RES_CONN_DIR, 'subj_resampling.npy'))
-
-    # load coordinates and hemisphere ids
-    coords = np.load(os.path.join(DATA_DIR, 'coords', 'coords_' + connectome + '.npy'))
-    hemiid = np.load(os.path.join(DATA_DIR, 'hemispheres', 'hemiid_' + connectome + '.npy'))
-
-    # construct group-consensus SC for bootstrapped samples
-    params = []
-    for sample_id, sample in enumerate(resampling):
-        tmp_params_dict = {'connectome':connectome,
-                           'iter_id':sample_id,
-                           'coords':coords,
-                           'hemiid':hemiid,
-                           'path_res_conn':RES_CONN_DIR,
-                           'sample':sample,
-                           }
-
-        params.append(tmp_params_dict)
-
-    pool1 = mp.Pool(processes=N_PROCESS)
-    res1 = [pool1.apply_async(consensus_network, (), p) for p in params]
-    for r1 in res1: r1.get()
-    pool1.close()
-
+    # define file connectivity data
+    data = d.fetch_connectome(connectome)
+    np.save(os.path.join(DATA_DIR, connectome + '_conn'+'.npy'), data['conn'])
+    if ifNorm:
+        np.save(os.path.join(DATA_DIR, connectome + '_dist'+'.npy'), data['dist'])
+    
     # --------------------------------------------------------------------------------------------------------------------
     # RUN WORKFLOW
     # ----------------------------------------------------------------------------------------------------------------------
     params = []
-    for iter_id in range(N_RUNS):
+  
+    for node in range(N_RUNS):
+        if (connectome == 'celegans'):
+            input_nodes_temp = [2,3,139,140,141,142,143,144] #sensory nodes
+                    # #motor neurons only for celegans
+            output_nodes_temp = [70,109,113,114,135,136,155,156,177,178,199,200]
+            output_nodes_temp.extend(range(28,39))
+            output_nodes_temp.extend(range(86,108))
+            output_nodes_temp.extend(range(185,197))
+            output_nodes_temp.extend(range(218,230))
+            output_nodes_temp.extend(range(238,279))
+        elif (connectome == 'drosophila'):
+            input_nodes_temp = [11, 12, 14, 16, 17, 23, 24, 35, 36, 38, 40, 41, 46,47] #vis
+            # #all other neurons as output neurons
+            output_nodes_temp = list(range(len(data['conn'])))
+            output_nodes_temp = np.delete(output_nodes_temp, input_nodes_temp)
+        elif(connectome == 'macaque_modha'):
+            output_nodes_temp = [55,56,57] 
+            output_nodes_temp.extend(range(59,76)) #motor module
+            input_nodes_temp = range(221,242)
+        elif(connectome == 'mouse'):
+            output_nodes_temp = [84,85] #motor areas
+            input_nodes_temp = [66,10,11,12,13,14] #visual areas
+            #input_nodes_temp = [4,5,15,19,60,61,71,75] #olfac areas
+        elif(connectome == 'human_func_scale250'):
+            output_nodes_temp = []
+            output_nodes_temp.extend(range(58,74))
+            output_nodes_temp.extend(range(288,304)) # precentral
+            input_nodes_temp = []
+            input_nodes_temp.extend(range (147, 165))
+            input_nodes_temp.extend(range(379,396)) # cuneus, pericalcarine and laeraloccipital
 
-        tmp = {'conn_name':'consensus',
-               'connectome':connectome,
-               'scores_file':filename,
-               'iter_id':iter_id,
+        else:
+            input_nodes_temp = [42]
+        # add output nodes
+
+
+
+        #method = 'empirical'#apple
+        rewireNum = 10#apple
+        percentage  = 1
+        tmp = {'connectome':connectome,
+                'percentage':percentage, #only matters when method is reverse #apple
+               'scores_file':(str(method) + "_"+ str(FACTOR)+ "_"+ str(connectome)+"_"+ str(ifNorm)), #apple # str(rewireNum)
+               'rewireNum': rewireNum, #only matters when method is rewire
+               'method':method, #{reverse,rewire}
+               'ifNorm':ifNorm,
+               'FACTOR':FACTOR,
+               'iter_id':node,
                'iter_conn':True,
                'iter_io':False,
                'iter_sim':True,
                'encode':True,
-               'decode':True,
-               'readout_modules':class_mapping_ctx,
+               'decode':False,
+               'readout_modules':None,
+               'input_nodes':input_nodes_temp, 
+               'output_nodes':output_nodes_temp,
                'path_res_conn':RES_CONN_DIR,
                'path_io':IO_TASK_DIR,
                'path_res_sim':RES_SIM_DIR,
@@ -445,167 +469,56 @@ def reliability(connectome):
     pool2.close()
 
     print ('PROCESSING TIME - RELIABILITY')
-    # print (time.clock()-t0_1, "seconds process time")
-    # print (time.time()-t0_2, "seconds wall time")
+    print (time.perf_counter()-t0_1, "seconds process time")
+    #print (time.time()-t0_2, "seconds wall time")
 
+def reversedConn (connectome,percentage):#to be called after data is fetched in reliability
+    conn = np.load(os.path.join(DATA_DIR, connectome + '_conn'+'.npy'), allow_pickle=True)
+    if percentage == 0:
+        return conn
+    else:
+        if percentage == 1:
+            reverseAll = True
+            rConn = conn.transpose()
+            return rConn
+        else:
+            reverseAll = False
+            sampledList = selectPairs(connectome,percentage) #the list contain indices pairs that are to be reversed
+            #swaps
+            rConn = copy.deepcopy(conn)
+            for pair in sampledList:
+                temp = rConn[pair[0]][pair[1]]
+                rConn[pair[0]][pair[1]] = rConn[pair[1]][pair[0]]
+                rConn[pair[1]][pair[0]] = temp
 
-def significance(connectome):
-    """
-        Different null connectivity matrix, same I/O signals
-    """
+        return rConn
 
-    print ('INITIATING PROCESSING TIME - SIGNIFICANCE')
-    # t0_1 = time.clock()
-    # t0_2 = time.time()
+def rewiringConn(connectome,rewireIter):
+    conn = np.load(os.path.join(DATA_DIR, connectome + '_conn'+'.npy'), allow_pickle=True)
+    arr,num = reference.randmio_dir(conn, rewireIter)
+    return arr,num
 
-    EXP = 'significance'
-
-    IO_TASK_DIR  = os.path.join(RAW_RES_DIR, 'io_tasks', EXP, f'{INPUTS}_scale{connectome[-3:]}')
-    RES_CONN_DIR = os.path.join(RAW_RES_DIR, 'conn_results', EXP, f'scale{connectome[-3:]}')
-    RES_SIM_DIR  = os.path.join(RAW_RES_DIR, 'sim_results', EXP, f'{INPUTS}_scale{connectome[-3:]}')
-    RES_TSK_DIR  = os.path.join(RAW_RES_DIR, 'tsk_results', EXP, f'{INPUTS}_scale{connectome[-3:]}')
-
-    if not os.path.exists(IO_TASK_DIR):  os.makedirs(IO_TASK_DIR)
-    if not os.path.exists(RES_CONN_DIR): os.makedirs(RES_CONN_DIR)
-    if not os.path.exists(RES_SIM_DIR):  os.makedirs(RES_SIM_DIR)
-    if not os.path.exists(RES_TSK_DIR):  os.makedirs(RES_TSK_DIR)
-
-
-    # --------------------------------------------------------------------------------------------------------------------
-    # CREATE NULL NETWORK MODELS
-    # ----------------------------------------------------------------------------------------------------------------------
-    CONN_DIR = os.path.join(DATA_DIR, 'connectivity', 'consensus')
-    conn_wei = np.load(os.path.join(CONN_DIR, connectome + '.npy'))
-
-    filename, class_labels, class_mapping_ctx = load_metada(connectome)
-
-    params = []
-    for iter_id in range(N_RUNS):
-
-        tmp = {'conn':conn_wei.copy(),
-               'model_name':'rand_mio',
-               'path_res_conn':RES_CONN_DIR,
-               'iter_id':iter_id,
-               'swaps':10
-                }
-
-        params.append(tmp)
-
-    pool1 = mp.Pool(processes=N_PROCESS)
-    res1 = [pool1.apply_async(null_network, (), p) for p in params]
-    for r1 in res1: r1.get()
-    pool1.close()
-
-    # --------------------------------------------------------------------------------------------------------------------
-    # RUN WORKFLOW
-    # ----------------------------------------------------------------------------------------------------------------------
-    params = []
-    for iter_id in range(N_RUNS):
-
-        tmp = {'conn_name':'rand_mio',
-               'connectome':connectome,
-               'scores_file':filename,
-               'iter_id':iter_id,
-               'iter_conn':True,
-               'iter_io':False,
-               'iter_sim':True,
-               'encode':True,
-               'decode':True,
-               'readout_modules':class_mapping_ctx,
-               'path_res_conn':RES_CONN_DIR,
-               'path_io':IO_TASK_DIR,
-               'path_res_sim':RES_SIM_DIR,
-               'path_res_tsk':RES_TSK_DIR,
-               }
-
-        params.append(tmp)
-
-    pool2 = mp.Pool(processes=N_PROCESS)
-    res2 = [pool2.apply_async(run_workflow, (), p) for p in params]
-    for r2 in res2: r2.get()
-    pool2.close()
-
-    print ('PROCESSING TIME - SIGNIFICANCE')
-    # print (time.clock()-t0_1, "seconds process time")
-    # print (time.time()-t0_2, "seconds wall time")
-
-
-def spintest(connectome):
-    """
-        Same connectivity matrix, same I/O signals, same reservoir states,
-        I/O node assignments based on spintest
-    """
-
-    print ('INITIATING PROCESSING TIME - SPINTEST')
-    # t0_1 = time.clock()
-    # t0_2 = time.time()
-
-    EXP = 'spintest'
-
-    IO_TASK_DIR  = os.path.join(RAW_RES_DIR, 'io_tasks', EXP, f'{INPUTS}_scale{connectome[-3:]}')
-    RES_SIM_DIR  = os.path.join(RAW_RES_DIR, 'sim_results', EXP, f'{INPUTS}_scale{connectome[-3:]}')
-    RES_TSK_DIR  = os.path.join(RAW_RES_DIR, 'tsk_results', EXP, f'{INPUTS}_scale{connectome[-3:]}')
-
-    if not os.path.exists(IO_TASK_DIR):  os.makedirs(IO_TASK_DIR)
-    if not os.path.exists(RES_SIM_DIR):  os.makedirs(RES_SIM_DIR)
-    if not os.path.exists(RES_TSK_DIR):  os.makedirs(RES_TSK_DIR)
-
-    # --------------------------------------------------------------------------------------------------------------------
-    # RUN WORKFLOW
-    # ----------------------------------------------------------------------------------------------------------------------
-    CONN_DIR = os.path.join(DATA_DIR, 'connectivity', 'consensus')
-
-    filename, class_labels, class_mapping_ctx = load_metada(connectome)
-    spins = np.genfromtxt(os.path.join(DATA_DIR, 'spin_test', 'spin_' + connectome + '.csv'), delimiter=',').astype(int)
-
-    # --------------------------------------------------------------------------------------------------------------------
-    # RUN WORKFLOW
-    # ----------------------------------------------------------------------------------------------------------------------
-
-    params = []
-    for iter_id in range(N_RUNS):
-
-        tmp = {'conn_name':connectome,
-               'connectome':connectome,
-               'scores_file':filename,
-               'iter_id':iter_id,
-               'iter_conn':False,
-               'iter_io':False,
-               'iter_sim':False,
-               'encode':True,
-               'decode':True,
-               'readout_modules':class_mapping_ctx.copy()[spins[:, iter_id]],
-               'path_res_conn':CONN_DIR,
-               'path_io':IO_TASK_DIR,
-               'path_res_sim':RES_SIM_DIR,
-               'path_res_tsk':RES_TSK_DIR,
-               }
-
-        params.append(tmp)
-
-    pool = mp.Pool(processes=N_PROCESS)
-    res = [pool.apply_async(run_workflow, (), p) for p in params]
-    for r in res: r.get()
-    pool.close()
-
-    print ('PROCESSING TIME - SPINTEST')
-    # print (time.clock()-t0_1, "seconds process time")
-    # print (time.time()-t0_2, "seconds wall time")
+def normalizeConn(connectome,conn):
+    dist = np.load(os.path.join(DATA_DIR, connectome + '_dist'+'.npy'), allow_pickle=True)
+    wiringCost = np.sum(dist*conn)
+    return wiringCost
 
 
 #%% --------------------------------------------------------------------------------------------------------------------
 # MAIN
 # ----------------------------------------------------------------------------------------------------------------------
 def main():
-    connectomes = [
-                   'human_500',
-                   'human_250'
-                  ]
+    connectomes = ['human_func_scale250']#, 'celegans','mouse']
+    factors = [0.001]#, 0.01, 0.1, 1, 10]
+    normalizations = [False]
+    methods = ['empirical', 'rewire','reverse']
 
     for connectome in connectomes:
-        reliability(connectome)
-        significance(connectome)
-        spintest(connectome)
+        for factor in factors:
+            for normalization in normalizations:
+                    for method in methods:
+                        reliability(connectome, factor, normalization, method)
+                        print ("finished with ", str(connectome), str(factor),str(normalization), str(method))
 
 if __name__ == '__main__':
     main()
