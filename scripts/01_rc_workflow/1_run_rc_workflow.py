@@ -58,7 +58,7 @@ if not os.path.exists(os.path.join(PROJ_DIR, 'data')):
         os.makedirs(os.path.join(PROJ_DIR, 'data'))
 DATA_DIR = os.path.join(PROJ_DIR, 'data')
 
-RAW_RES_DIR = os.path.join(PROJ_DIR, 'raw_results')
+RAW_RES_DIR = os.path.join('/home/mingzeli/neuro/results/', 'raw_results')
 
 #%% --------------------------------------------------------------------------------------------------------------------
 # FUNCTIONS
@@ -263,7 +263,8 @@ def run_workflow(connectome, method, ifNorm, FACTOR, path_io, path_res_sim, path
                                          task_ref=TASK_REF,
                                          **io_kwargs
                                         )
-
+        print("inputs size is the following: ")
+        print(np.shape(inputs))
         np.save(os.path.join(path_io, input_file), inputs)
         np.save(os.path.join(path_io, output_file), outputs)
 
@@ -275,6 +276,9 @@ def run_workflow(connectome, method, ifNorm, FACTOR, path_io, path_res_sim, path
     if not os.path.exists(os.path.join(path_res_sim, res_states_file)):
 
         input_train, input_test = np.load(os.path.join(path_io, input_file))
+        print("input train and input test size are the following: ")
+        print(np.shape(input_train))
+        print(np.shape(input_test))
 
         # create input connectivity matrix - depends on the shape of the input
         w_in = np.zeros((input_train.shape[1],len(conn)))
@@ -370,7 +374,7 @@ def reliability(connectome, FACTOR, ifNorm, method):
     if (method == 'rewire'):
         N_RUNS = 1000
     else:
-        N_RUNS = 1
+        N_RUNS = 1000
 
     print ('INITIATING PROCESSING TIME - RELIABILITY')
     t0_1 = time.perf_counter()
@@ -388,11 +392,11 @@ def reliability(connectome, FACTOR, ifNorm, method):
     if not os.path.exists(RES_SIM_DIR):  os.makedirs(RES_SIM_DIR)
     if not os.path.exists(RES_TSK_DIR):  os.makedirs(RES_TSK_DIR)
 
-    # define file connectivity data
-    data = d.fetch_connectome(connectome)
-    np.save(os.path.join(DATA_DIR, connectome + '_conn'+'.npy'), data['conn'])
-    if ifNorm:
-        np.save(os.path.join(DATA_DIR, connectome + '_dist'+'.npy'), data['dist'])
+    # # define file connectivity data
+    # data = d.fetch_connectome(connectome)
+    # np.save(os.path.join(DATA_DIR, connectome + '_conn'+'.npy'), data['conn'])
+    # if ifNorm:
+    #     np.save(os.path.join(DATA_DIR, connectome + '_dist'+'.npy'), data['dist'])
     
     # --------------------------------------------------------------------------------------------------------------------
     # RUN WORKFLOW
@@ -508,10 +512,10 @@ def normalizeConn(connectome,conn):
 # MAIN
 # ----------------------------------------------------------------------------------------------------------------------
 def main():
-    connectomes = ['human_func_scale250']#, 'celegans','mouse']
-    factors = [0.001]#, 0.01, 0.1, 1, 10]
-    normalizations = [False]
-    methods = ['empirical', 'rewire','reverse']
+    connectomes = ['mouse']#, 'celegans','mouse']
+    factors = [0.0001]#, 0.01, 0.1, 1, 10]
+    normalizations = [True]
+    methods = ['empirical']#, 'rewire','reverse']
 
     for connectome in connectomes:
         for factor in factors:
